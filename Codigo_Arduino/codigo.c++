@@ -1,42 +1,33 @@
-
-
-//Codigo para el funcionamiento de Arduino
-
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
-
-// Configuración del LCD I2C
+// LCD I2C (conectado a A4(SDA) y A5(SCL))
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
+// Sensor de temperatura (DS18B20 en D11)
+#define ONE_WIRE_BUS 11
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
 
-// Pines del sensor ultrasónico
-const int trigPin = 7;
-const int echoPin = 6;
-
-// Sensor de temperatura
-const int tempSensor = A4;
-
-// Botón con resistencia pull-down
-const int botonLCD = A2;
-
-// Pines del buzzer
-const int buzzer = A1;
-
-// LEDs
-const int leds[] = {2, 3, 5, 8, 9, 10, 11, 12, 13, A0};
+// Pines
+const int leds[] = {2, 3, 4, 5, 6, 7, 8, 9, 10}; // D2 a D10
 const int numLeds = sizeof(leds) / sizeof(leds[0]);
 
-// Parámetros del tanque
+const int trigPin = 13;      // D13 (RX del sensor ultrasónico)
+const int echoPin = 12;      // D12 (TX del sensor ultrasónico)
+const int buzzer = A0;       // Buzzer en A0
+const int botonLCD = A2;     // Botón para LCD
+const int botonMute = A3;    // Botón para silenciar buzzer
+
+// Estado
+bool lcdEncendido = true;
+bool buzzerActivo = true;
+
+// Parámetros tanque
 const int distanciaMaxima = 400;
 const int distanciaMinima = 5;
-
-// Estado del LCD
-bool lcdEncendido = true;
-
-// Notas para la melodia (frecuencia en Hz)
-const int melodia[] = {262, 294, 330, 349, 392, 440, 494, 523};
-const int duraciones[] = {200, 200, 200, 200, 200, 200, 200, 400};
 
 void setup() {
   lcd.init();
@@ -47,11 +38,13 @@ void setup() {
   lcd.clear();
   lcd.print("Listo");
 
+  sensors.begin();
+
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
-  pinMode(tempSensor, INPUT);
-  pinMode(botonLCD, INPUT);
   pinMode(buzzer, OUTPUT);
+  pinMode(botonLCD, INPUT);
+  pinMode(botonMute, INPUT);
 
   for (int i = 0; i < numLeds; i++) {
     pinMode(leds[i], OUTPUT);
@@ -71,29 +64,36 @@ void loop() {
   }
 
   controlarLEDs(porcentajeLlenado);
-  manejarBotonLCD();
-  controlarBuzzer(porcentajeLlenado);
+  manejarBotones();
+  controlarBuzzer(porcentajeLlenado, temperatura);
 
   delay(500);
 }
 
-// Funciones auxiliares
+// Funciones
 int medirDistancia() {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
+
   long duracion = pulseIn(echoPin, HIGH, 30000);
-  return (duracion > 0) ? duracion * 0.034 / 2 : -1;
+  if (duracion == 0) {
+    return -1;  // No eco detectado
+  } else {
+    return duracion * 0.034 / 2;
+  }
 }
 
 float leerTemperatura() {
-  int tempValue = analogRead(tempSensor);
-  return (tempValue * 5.0 / 1023.0) * 100;
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempCByIndex(0);
+  return (tempC == DEVICE_DISCONNECTED_C) ? -127.0 : tempC;
 }
 
 int calcularLlenado(int distancia) {
+  if (distancia == -1) return 0;
   if (distancia <= distanciaMinima) return 100;
   if (distancia >= distanciaMaxima) return 0;
   return (1 - (float)(distancia - distanciaMinima) / (distanciaMaxima - distanciaMinima)) * 100;
@@ -110,6 +110,11 @@ void mostrarDatosLCD(int porcentajeLlenado, float temperatura) {
   lcd.print("Temp: ");
   lcd.print(temperatura, 1);
   lcd.print("C");
+
+  if (temperatura >= 40.0) {
+    lcd.setCursor(0, 1);
+    lcd.print("Temp ALTA!     ");
+  }
 }
 
 void controlarLEDs(int porcentajeLlenado) {
@@ -119,27 +124,53 @@ void controlarLEDs(int porcentajeLlenado) {
   }
 }
 
-void manejarBotonLCD() {
-  static bool lastState = LOW;
-  bool estadoBoton = digitalRead(botonLCD);
-  if (estadoBoton == HIGH && lastState == LOW) {
+void manejarBotones() {
+  static bool lastEstadoLCD = LOW;
+  static bool lastEstadoMute = LOW;
+
+  bool estadoLCD = digitalRead(botonLCD);
+  bool estadoMute = digitalRead(botonMute);
+
+  // Botón LCD
+  if (estadoLCD == HIGH && lastEstadoLCD == LOW) {
     lcdEncendido = !lcdEncendido;
   }
-  lastState = estadoBoton;
+  lastEstadoLCD = estadoLCD;
+
+  // Botón Mute
+  if (estadoMute == HIGH && lastEstadoMute == LOW) {
+    buzzerActivo = !buzzerActivo;
+  }
+  lastEstadoMute = estadoMute;
 }
 
-void controlarBuzzer(int porcentajeLlenado) {
-  if (porcentajeLlenado <= 5 || porcentajeLlenado >= 95) {
-    reproducirMelodia();
+void controlarBuzzer(int porcentajeLlenado, float temperatura) {
+  static unsigned long ultimaAlarma = 0;
+  unsigned long ahora = millis();
+
+  if (!buzzerActivo) {
+    noTone(buzzer);
+    return;
+  }
+
+  if (temperatura >= 40.0) {
+    // Sonido para temperatura alta: tono más agudo
+    if (ahora - ultimaAlarma >= 1000) {
+      tone(buzzer, 2000, 200);
+      delay(150);
+      tone(buzzer, 2000, 200);
+      ultimaAlarma = ahora;
+    }
+  }
+  else if (porcentajeLlenado <= 5 || porcentajeLlenado >= 95) {
+    // Sonido para nivel de tanque crítico
+    if (ahora - ultimaAlarma >= 1000) {
+      tone(buzzer, 1000, 200);
+      delay(250);
+      tone(buzzer, 1000, 200);
+      ultimaAlarma = ahora;
+    }
   } else {
     noTone(buzzer);
   }
-}
-
-void reproducirMelodia() {
-  for (int i = 0; i < 8; i++) {
-    tone(buzzer, melodia[i], duraciones[i]);
-    delay(duraciones[i] + 50);
-  }
-  noTone(buzzer);
 }
