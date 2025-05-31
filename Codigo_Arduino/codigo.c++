@@ -3,36 +3,36 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// LCD I2C (A4 = SDA, A5 = SCL)
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// Sensor de temperatura DS18B20 en D11
 #define ONE_WIRE_BUS 11
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
-// Pines
-const int leds[] = {10, 9, 8, 7, 6, 5, 4, 3, 2}; // D10 a D2
+const int leds[] = {10, 9, 8, 7, 6, 5, 4, 3, 2};
 const int numLeds = sizeof(leds) / sizeof(leds[0]);
-
 const int trigPin = 13;
 const int echoPin = 12;
 const int buzzer = A0;
 const int botonEncender = A2;
 const int botonApagar = A3;
 
-// Estados
 bool sistemaEncendido = false;
 bool buzzerActivo = true;
+bool bloquearMedicion = false;
 
-// Parámetros del tanque
-const int distanciaMaxima = 100;
-const int distanciaMinima = 7; // Altura mínima para 100%
+int distanciaMinima = 20;
+int distanciaMaxima = 50;
+int capacidadLitros = 15;
+bool mostrarEnGalones = true;
 
-// Debounce
-unsigned long ultimoTiempoBotonEnc = 0;
-unsigned long ultimoTiempoBotonApag = 0;
-const unsigned long debounceDelay = 200;
+unsigned long tiempoPresionadoEncender = 0;
+unsigned long tiempoPresionadoApagar = 0;
+const unsigned long tiempoActivacion = 5000;
+
+bool enMenu = false;
+bool editando = false;
+int opcionMenu = 0;
+const int totalOpciones = 3;
 
 void setup() {
   lcd.init();
@@ -41,7 +41,6 @@ void setup() {
   lcd.print("Sistema listo");
 
   sensors.begin();
-
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(buzzer, OUTPUT);
@@ -61,30 +60,209 @@ void loop() {
 
   if (!sistemaEncendido) {
     lcd.noBacklight();
-    for (int i = 0; i < numLeds; i++) {
-      digitalWrite(leds[i], LOW);
-    }
+    for (int i = 0; i < numLeds; i++) digitalWrite(leds[i], LOW);
     noTone(buzzer);
+    return;
+  }
+
+  if (enMenu) {
+    mostrarMenu();
     return;
   }
 
   int distancia = medirDistanciaFiltrada();
   float temperatura = leerTemperatura();
   int porcentajeLlenado = calcularLlenado(distancia);
+  float volumenLitros = capacidadLitros * (porcentajeLlenado / 100.0);
+  float volumenGalones = volumenLitros / 3.785;
 
-  mostrarDatosLCD(porcentajeLlenado, temperatura, distancia);
+  mostrarDatosLCD(porcentajeLlenado, temperatura, distancia, volumenLitros, volumenGalones);
   controlarLEDs(porcentajeLlenado);
   controlarBuzzer(porcentajeLlenado, temperatura);
 
   delay(500);
 }
 
-// ---------------- FUNCIONES ----------------
+// ----------- FUNCIONES -------------
+
+void manejarBotones() {
+  unsigned long ahora = millis();
+
+  // BOTÓN ENCENDER
+  if (digitalRead(botonEncender) == HIGH) {
+    if (tiempoPresionadoEncender == 0)
+      tiempoPresionadoEncender = ahora;
+
+    if (!sistemaEncendido && (ahora - tiempoPresionadoEncender >= tiempoActivacion)) {
+      sistemaEncendido = true;
+      lcd.backlight();
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Encendiendo...");
+      animacionEncendido();
+      delay(500);
+    }
+
+  } else {
+    if ((ahora - tiempoPresionadoEncender > 50) && (ahora - tiempoPresionadoEncender < tiempoActivacion)) {
+      if (sistemaEncendido && !enMenu) {
+        enMenu = true;
+        opcionMenu = 0;
+        lcd.clear();
+        delay(300); // Antirrebote
+      }
+    }
+    tiempoPresionadoEncender = 0;
+  }
+
+  // BOTÓN APAGAR
+  if (digitalRead(botonApagar) == HIGH) {
+    if (tiempoPresionadoApagar == 0)
+      tiempoPresionadoApagar = ahora;
+
+    if (sistemaEncendido && !enMenu && (ahora - tiempoPresionadoApagar >= tiempoActivacion)) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Apagando...");
+      animacionApagado();
+      delay(500);
+      sistemaEncendido = false;
+    }
+
+  } else {
+    if (enMenu && tiempoPresionadoApagar != 0) {
+      entrarOpcionMenu();
+      tiempoPresionadoApagar = 0;
+      delay(300); // Antirrebote
+    } else {
+      tiempoPresionadoApagar = 0;
+    }
+  }
+}
+
+void mostrarMenu() {
+  lcd.setCursor(0, 0);
+  switch (opcionMenu) {
+    case 0:
+      lcd.print("Mostrar: ");
+      lcd.print(mostrarEnGalones ? "Galones" : "Litros ");
+      break;
+    case 1:
+      lcd.print("Dist Max: ");
+      lcd.print(distanciaMaxima);
+      lcd.print("cm     ");
+      break;
+    case 2:
+      lcd.print("Capacidad: ");
+      lcd.print(capacidadLitros);
+      lcd.print("L      ");
+      break;
+  }
+
+  lcd.setCursor(0, 1);
+  if (editando) {
+    lcd.print("Enc=Mod Apg=OK ");
+  } else {
+    lcd.print("Enc=Sig Apg=Ed ");
+  }
+
+  // Control botón Encender (breve)
+  if (digitalRead(botonEncender) == HIGH) {
+    delay(200);
+    while (digitalRead(botonEncender) == HIGH);
+
+    if (!editando) {
+      opcionMenu = (opcionMenu + 1) % totalOpciones;
+    } else {
+      modificarOpcionActual();
+    }
+    lcd.clear();
+  }
+}
+
+// Reemplazar la función entrarOpcionMenu por esta:
+void entrarOpcionMenu() {
+  if (!editando) {
+    editando = true;
+  } else {
+    editando = false;
+    lcd.clear();
+    lcd.print("Guardado!");
+    delay(500);
+    lcd.clear();
+    enMenu = false;
+  }
+}
+
+// Nueva función para modificar valores:
+void modificarOpcionActual() {
+  switch (opcionMenu) {
+    case 0:
+      mostrarEnGalones = !mostrarEnGalones;
+      break;
+    case 1:
+      distanciaMaxima += 5;
+      if (distanciaMaxima > 150) distanciaMaxima = 30;  // límite superior/inferior
+      break;
+    case 2:
+      capacidadLitros += 5;
+      if (capacidadLitros > 100) capacidadLitros = 10;
+      break;
+  }
+}
+
+void mostrarDatosLCD(int porcentaje, float temperatura, int distancia, float litros, float galones) {
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("TQ:");
+  lcd.print(porcentaje);
+  lcd.print("% ");
+  int bloques = map(porcentaje, 0, 100, 0, 8);
+  for (int i = 0; i < 8; i++) lcd.print(i < bloques ? (char)255 : ' ');
+
+  lcd.setCursor(0, 1);
+  if (distancia <= distanciaMinima) {
+    lcd.print("Tanque Lleno ");
+  } else if (distancia >= distanciaMaxima) {
+    lcd.print("Tanque Vacio ");
+  } else {
+    if (temperatura >= 40.0) {
+      lcd.print("Temp ALTA ");
+    } else {
+      lcd.print(temperatura, 1);
+      lcd.print("C ");
+    }
+
+    if (mostrarEnGalones) {
+      lcd.print(galones, 1);
+      lcd.print("G");
+    } else {
+      lcd.print(litros, 1);
+      lcd.print("L");
+    }
+  }
+}
+
+int medirDistanciaFiltrada() {
+  static int ultimaDistancia = 100;
+  int nuevaDistancia = medirDistancia();
+  if (nuevaDistancia == -1) return ultimaDistancia;
+
+  if (bloquearMedicion && nuevaDistancia > distanciaMinima + 2) bloquearMedicion = false;
+  if (bloquearMedicion) return ultimaDistancia;
+
+  if (abs(nuevaDistancia - ultimaDistancia) > 1) {
+    ultimaDistancia = nuevaDistancia;
+  }
+
+  if (ultimaDistancia <= distanciaMinima) bloquearMedicion = true;
+  return ultimaDistancia;
+}
 
 int medirDistancia() {
   long suma = 0;
-  int muestras = 5;
-  int lecturasValidas = 0;
+  int muestras = 5, validas = 0;
 
   for (int i = 0; i < muestras; i++) {
     digitalWrite(trigPin, LOW);
@@ -93,31 +271,19 @@ int medirDistancia() {
     delayMicroseconds(10);
     digitalWrite(trigPin, LOW);
 
-    long duracion = pulseIn(echoPin, HIGH, 30000); // Timeout de 30 ms
+    long duracion = pulseIn(echoPin, HIGH, 30000);
     if (duracion > 0) {
       float distancia = duracion * 0.0343 / 2;
       if (distancia > 0 && distancia <= 200) {
         suma += distancia;
-        lecturasValidas++;
+        validas++;
       }
     }
     delay(5);
   }
 
-  if (lecturasValidas == 0) return -1;
-
-  return suma / lecturasValidas;
-}
-
-int medirDistanciaFiltrada() {
-  static int ultimaDistancia = 100;
-  int nuevaDistancia = medirDistancia();
-
-  if (nuevaDistancia != -1 && abs(nuevaDistancia - ultimaDistancia) > 1) {
-    ultimaDistancia = nuevaDistancia;
-  }
-
-  return ultimaDistancia;
+  if (validas == 0) return -1;
+  return suma / validas;
 }
 
 float leerTemperatura() {
@@ -131,59 +297,18 @@ int calcularLlenado(int distancia) {
   if (distancia >= distanciaMaxima) return 0;
 
   float porcentaje = 100.0 * (1 - (float)(distancia - distanciaMinima) / (distanciaMaxima - distanciaMinima));
-
-  if (porcentaje < 5) porcentaje = 5;
-  if (porcentaje > 95) porcentaje = 95;
-  return (int)porcentaje;
-}
-
-void mostrarDatosLCD(int porcentajeLlenado, float temperatura, int distancia) {
-  lcd.backlight();
-  lcd.clear();
-
-  // Línea 1: Porcentaje y barra
-  lcd.setCursor(0, 0);
-  lcd.print("TQ:");
-  lcd.print(porcentajeLlenado);
-  lcd.print("% ");
-
-  // Barra de progreso (8 bloques máximo)
-  int bloques = map(porcentajeLlenado, 0, 100, 0, 8);
-  for (int i = 0; i < 8; i++) {
-    lcd.print(i < bloques ? (char)255 : ' '); // 255 = carácter '█'
-  }
-
-  // Línea 2: Temp y distancia
-  lcd.setCursor(0, 1);
-  if (temperatura >= 40.0) {
-    lcd.print("Temp ALTA! ");
-  } else {
-    lcd.print("T:");
-    lcd.print(temperatura, 1);
-    lcd.print("C ");
-  }
-
-  lcd.setCursor(11, 1);
-  lcd.print(distancia);
-  lcd.print("cm");
-
-  // Serial
-  Serial.print("Dist: ");
-  Serial.print(distancia);
-  Serial.print(" cm | Llenado: ");
-  Serial.print(porcentajeLlenado);
-  Serial.print("% | Temp: ");
-  Serial.println(temperatura);
+  return (porcentaje < 5) ? 5 : (int)porcentaje;
 }
 
 void controlarLEDs(int porcentajeLlenado) {
-  int ledsEncendidos = map(porcentajeLlenado, 0, 100, 0, numLeds);
+  int encender = map(porcentajeLlenado, 0, 100, 0, numLeds);
+  if (encender == 0) encender = 1;
   for (int i = 0; i < numLeds; i++) {
-    digitalWrite(leds[i], (i < ledsEncendidos) ? HIGH : LOW);
+    digitalWrite(leds[i], (i < encender) ? HIGH : LOW);
   }
 }
 
-void controlarBuzzer(int porcentajeLlenado, float temperatura) {
+void controlarBuzzer(int porcentaje, float temp) {
   static unsigned long ultimaAlarma = 0;
   unsigned long ahora = millis();
 
@@ -192,42 +317,23 @@ void controlarBuzzer(int porcentajeLlenado, float temperatura) {
     return;
   }
 
-  if (temperatura >= 40.0 || porcentajeLlenado <= 5 || porcentajeLlenado >= 95) {
+  if (temp >= 40.0 || porcentaje <= 5 || porcentaje >= 95) {
     if (ahora - ultimaAlarma >= 1000) {
-      tone(buzzer, temperatura >= 40.0 ? 2000 : 1000, 200);
+      tone(buzzer, 1500, 200);
       ultimaAlarma = ahora;
+      animacionAlerta();
     }
   } else {
     noTone(buzzer);
   }
 }
 
-void manejarBotones() {
-  unsigned long ahora = millis();
-
-  if (digitalRead(botonEncender) == HIGH && ahora - ultimoTiempoBotonEnc > debounceDelay) {
-    if (!sistemaEncendido) {
-      sistemaEncendido = true;
-      lcd.backlight();
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Encendiendo...");
-      animacionEncendido();
-      delay(500);
-    }
-    ultimoTiempoBotonEnc = ahora;
-  }
-
-  if (digitalRead(botonApagar) == HIGH && ahora - ultimoTiempoBotonApag > debounceDelay) {
-    if (sistemaEncendido) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Apagando...");
-      animacionApagado();
-      delay(500);
-      sistemaEncendido = false;
-    }
-    ultimoTiempoBotonApag = ahora;
+void animacionAlerta() {
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < numLeds; j++) digitalWrite(leds[j], HIGH);
+    delay(200);
+    for (int j = 0; j < numLeds; j++) digitalWrite(leds[j], LOW);
+    delay(200);
   }
 }
 
