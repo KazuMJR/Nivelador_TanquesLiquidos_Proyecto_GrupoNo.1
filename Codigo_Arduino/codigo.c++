@@ -20,10 +20,11 @@ bool sistemaEncendido = false;
 bool buzzerActivo = true;
 bool bloquearMedicion = false;
 
-int distanciaMinima = 20;
-int distanciaMaxima = 50;
+int distanciaMinima = 20; // en cm
+int distanciaMaxima = 50; // en cm
 int capacidadLitros = 15;
-bool mostrarEnGalones = true;
+bool mostrarEnGalones = false; // Comienza mostrando en litros
+bool usarMetros = false; // Variable para seleccionar entre metros y centímetros
 
 unsigned long tiempoPresionadoEncender = 0;
 unsigned long tiempoPresionadoApagar = 0;
@@ -32,7 +33,13 @@ const unsigned long tiempoActivacion = 5000;
 bool enMenu = false;
 bool editando = false;
 int opcionMenu = 0;
-const int totalOpciones = 3;
+const int totalOpciones = 5; // Total de opciones en el menú (incluye la opción de unidad)
+
+unsigned long ultimoInputMenu = 0;
+const unsigned long tiempoInactividadMenu = 10000; // 10 segundos
+unsigned long tiempoUltimaEdicion = 0; // Tiempo de la última edición
+unsigned long tiempoUltimaEdicionRapida = 0; // Tiempo para edición rápida
+const unsigned long tiempoRapido = 200; // Tiempo para incrementar rápidamente
 
 void setup() {
   lcd.init();
@@ -74,7 +81,7 @@ void loop() {
   float temperatura = leerTemperatura();
   int porcentajeLlenado = calcularLlenado(distancia);
   float volumenLitros = capacidadLitros * (porcentajeLlenado / 100.0);
-  float volumenGalones = volumenLitros / 3.785;
+  float volumenGalones = litrosAGalones(volumenLitros); // Conversión a galones
 
   mostrarDatosLCD(porcentajeLlenado, temperatura, distancia, volumenLitros, volumenGalones);
   controlarLEDs(porcentajeLlenado);
@@ -141,6 +148,7 @@ void manejarBotones() {
 }
 
 void mostrarMenu() {
+  unsigned long ahora = millis(); // Declarar ahora aquí
   lcd.setCursor(0, 0);
   switch (opcionMenu) {
     case 0:
@@ -150,97 +158,198 @@ void mostrarMenu() {
     case 1:
       lcd.print("Dist Max: ");
       lcd.print(distanciaMaxima);
-      lcd.print("cm     ");
+      lcd.print(usarMetros ? " m     " : " cm     "); // Mostrar unidad
       break;
     case 2:
       lcd.print("Capacidad: ");
-      lcd.print(capacidadLitros);
-      lcd.print("L      ");
+      if (mostrarEnGalones) {
+        lcd.print(litrosAGalones(capacidadLitros), 1); // Mostrar en galones
+        lcd.print("G    ");
+      } else {
+        lcd.print(capacidadLitros);
+        lcd.print("L     ");
+      }
+      break;
+    case 3:
+      lcd.print("Unidad: ");
+      lcd.print(usarMetros ? "Metros" : "Centim");
+      break;
+    case 4:
+      lcd.print("Guardando..."); // Opción para guardar configuración
       break;
   }
 
   lcd.setCursor(0, 1);
   if (editando) {
-    lcd.print("Enc=Mod Apg=OK ");
+    lcd.print("Enc=Sub Apg=Baj");
   } else {
     lcd.print("Enc=Sig Apg=Ed ");
   }
 
-  // Control botón Encender (breve)
+  // BOTÓN ENCENDER (subir o siguiente)
   if (digitalRead(botonEncender) == HIGH) {
     delay(200);
     while (digitalRead(botonEncender) == HIGH);
-
+    
     if (!editando) {
       opcionMenu = (opcionMenu + 1) % totalOpciones;
     } else {
-      modificarOpcionActual();
+      modificarOpcionActual(true);  // subir valor
+      tiempoUltimaEdicion = millis(); // Reinicia el temporizador de inactividad
     }
     lcd.clear();
   }
+
+  // BOTÓN APAGAR (bajar valor o editar)
+  if (editando && digitalRead(botonApagar) == HIGH) {
+    delay(200);
+    while (digitalRead(botonApagar) == HIGH);
+    modificarOpcionActual(false);  // bajar valor
+    tiempoUltimaEdicion = millis(); // Reinicia el temporizador de inactividad
+    lcd.clear();
+  }
+
+  // Verifica si ha pasado el tiempo de inactividad
+  if (editando && (millis() - tiempoUltimaEdicion >= tiempoInactividadMenu)) {
+    guardarConfiguracion(); // Llama a la función para guardar la configuración
+    editando = false; // Sale del modo de edición
+    lcd.clear();
+    lcd.print("Configuracion"); // Mensaje de guardado
+    lcd.setCursor(0, 1);
+    lcd.print("Guardada!");
+    delay(1000); // Espera 1 segundo antes de volver al menú
+    enMenu = false; // Sale del menú
+  }
+
+  // Manejo de incremento/decremento rápido
+  if (editando) {
+    if (digitalRead(botonEncender) == HIGH) {
+      if (ahora - tiempoUltimaEdicionRapida >= tiempoRapido) {
+        modificarOpcionActual(true); // Incrementar rápido
+        tiempoUltimaEdicionRapida = ahora; // Reinicia el tiempo
+      }
+    } else {
+      tiempoUltimaEdicionRapida = 0; // Resetea si no está presionado
+    }
+
+    if (digitalRead(botonApagar) == HIGH) {
+      if (ahora - tiempoUltimaEdicionRapida >= tiempoRapido) {
+        modificarOpcionActual(false); // Decrementar rápido
+        tiempoUltimaEdicionRapida = ahora; // Reinicia el tiempo
+      }
+    } else {
+      tiempoUltimaEdicionRapida = 0; // Resetea si no está presionado
+    }
+  }
 }
 
-// Reemplazar la función entrarOpcionMenu por esta:
 void entrarOpcionMenu() {
   if (!editando) {
-    editando = true;
+    editando = true; // Activa el modo de edición
+    tiempoUltimaEdicion = millis(); // Reinicia el temporizador de inactividad
   } else {
-    editando = false;
+    editando = false; // Desactiva el modo de edición
+    if (opcionMenu == 4) { // Si se selecciona la opción de guardar
+      guardarConfiguracion(); // Llama a la función para guardar la configuración
+      lcd.clear();
+      lcd.print("Guardado!");
+      delay(500);
+    }
     lcd.clear();
-    lcd.print("Guardado!");
-    delay(500);
-    lcd.clear();
-    enMenu = false;
+    enMenu = false; // Sale del menú
   }
 }
 
-// Nueva función para modificar valores:
-void modificarOpcionActual() {
+// Nueva función para guardar la configuración
+void guardarConfiguracion() {
+  // Aquí puedes agregar el código necesario para guardar la configuración
+  // Por ejemplo, guardar en la EEPROM si es necesario
+}
+
+void modificarOpcionActual(bool subir) {
   switch (opcionMenu) {
     case 0:
-      mostrarEnGalones = !mostrarEnGalones;
+      mostrarEnGalones = !mostrarEnGalones; // Cambia entre litros y galones
       break;
     case 1:
-      distanciaMaxima += 5;
-      if (distanciaMaxima > 150) distanciaMaxima = 30;  // límite superior/inferior
+      // Incremento y decremento rápido para distancia máxima
+      if (subir) {
+        if (usarMetros) {
+          distanciaMaxima += 1; // Aumenta 1 metro
+        } else {
+          distanciaMaxima += 5; // Aumenta 5 cm
+        }
+      } else {
+        if (usarMetros) {
+          distanciaMaxima -= 1; // Disminuye 1 metro
+        } else {
+          distanciaMaxima -= 5; // Disminuye 5 cm
+        }
+        if (distanciaMaxima < 0) distanciaMaxima = 0; // Evita valores negativos
+      }
       break;
     case 2:
-      capacidadLitros += 5;
-      if (capacidadLitros > 100) capacidadLitros = 10;
+      // Incremento y decremento de uno en uno para capacidad
+      if (subir) {
+        capacidadLitros++; // Aumenta la capacidad en litros de uno en uno
+      } else {
+        capacidadLitros--; // Disminuye la capacidad en litros de uno en uno
+        if (capacidadLitros < 0) capacidadLitros = 0; // Evita valores negativos
+      }
+      break;
+    case 3:
+      usarMetros = !usarMetros; // Alterna entre metros y centímetros
+      // Convertir la distancia máxima a la unidad correspondiente
+      if (usarMetros) {
+        distanciaMaxima = cmAMetros(distanciaMaxima); // Convertir a metros
+      } else {
+        distanciaMaxima = metrosACm(distanciaMaxima); // Convertir a centímetros
+      }
       break;
   }
+}
+
+float litrosAGalones(float litros) {
+  return litros / 3.785; // Conversión de litros a galones
+}
+
+float galonesALitros(float galones) {
+  return galones * 3.785; // Conversión de galones a litros
 }
 
 void mostrarDatosLCD(int porcentaje, float temperatura, int distancia, float litros, float galones) {
   lcd.backlight();
   lcd.clear();
+  
+  // Mostrar porcentaje de llenado y temperatura en la primera línea
   lcd.setCursor(0, 0);
   lcd.print("TQ:");
   lcd.print(porcentaje);
   lcd.print("% ");
-  int bloques = map(porcentaje, 0, 100, 0, 8);
-  for (int i = 0; i < 8; i++) lcd.print(i < bloques ? (char)255 : ' ');
+  lcd.print("Temp:");
+  lcd.print(temperatura, 1); // Muestra la temperatura con un decimal
+  lcd.print("C");
 
+  // Mostrar distancia en la segunda línea
   lcd.setCursor(0, 1);
   if (distancia <= distanciaMinima) {
-    lcd.print("Tanque Lleno ");
+    lcd.print("      Lleno");
   } else if (distancia >= distanciaMaxima) {
-    lcd.print("Tanque Vacio ");
+    lcd.print("      Vacio");
   } else {
-    if (temperatura >= 40.0) {
-      lcd.print("Temp ALTA ");
-    } else {
-      lcd.print(temperatura, 1);
-      lcd.print("C ");
-    }
+    lcd.print("Dist: ");
+    lcd.print(distancia);
+    lcd.print(usarMetros ? " m" : " cm");
+  }
 
-    if (mostrarEnGalones) {
-      lcd.print(galones, 1);
-      lcd.print("G");
-    } else {
-      lcd.print(litros, 1);
-      lcd.print("L");
-    }
+  // Mostrar volumen en litros o galones
+  lcd.setCursor(0, 1);
+  if (mostrarEnGalones) {
+    lcd.print(galones, 1);
+    lcd.print("G");
+  } else {
+    lcd.print(litros, 1);
+    lcd.print("L");
   }
 }
 
@@ -273,7 +382,10 @@ int medirDistancia() {
 
     long duracion = pulseIn(echoPin, HIGH, 30000);
     if (duracion > 0) {
-      float distancia = duracion * 0.0343 / 2;
+      float distancia = duracion * 0.0343 / 2; // Calcula la distancia en cm
+      if (usarMetros) {
+        distancia = cmAMetros(distancia); // Convierte a metros si es necesario
+      }
       if (distancia > 0 && distancia <= 200) {
         suma += distancia;
         validas++;
@@ -349,4 +461,13 @@ void animacionApagado() {
     digitalWrite(leds[i], LOW);
     delay(100);
   }
+}
+
+// Funciones de conversión
+float cmAMetros(float cm) {
+  return cm / 100.0; // Conversión de centímetros a metros
+}
+
+float metrosACm(float metros) {
+  return metros * 100.0; // Conversión de metros a centímetros
 }
