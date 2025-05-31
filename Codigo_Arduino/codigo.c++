@@ -23,7 +23,7 @@ bool bloquearMedicion = false;
 int distanciaMinima = 20; // en cm
 int distanciaMaxima = 50; // en cm
 int capacidadLitros = 15;
-bool mostrarEnGalones = false; // Comienza mostrando en litros
+bool mostrarEnGalones = true; // Comienza mostrando en litros
 bool usarMetros = false; // Variable para seleccionar entre metros y centímetros
 
 unsigned long tiempoPresionadoEncender = 0;
@@ -77,7 +77,7 @@ void loop() {
     return;
   }
 
-  int distancia = medirDistanciaFiltrada();
+  float distancia = medirDistanciaFiltrada(); // Cambiado a float
   float temperatura = leerTemperatura();
   int porcentajeLlenado = calcularLlenado(distancia);
   float volumenLitros = capacidadLitros * (porcentajeLlenado / 100.0);
@@ -317,7 +317,7 @@ float galonesALitros(float galones) {
   return galones * 3.785; // Conversión de galones a litros
 }
 
-void mostrarDatosLCD(int porcentaje, float temperatura, int distancia, float litros, float galones) {
+void mostrarDatosLCD(int porcentaje, float temperatura, float distancia, float litros, float galones) {
   lcd.backlight();
   lcd.clear();
   
@@ -338,7 +338,7 @@ void mostrarDatosLCD(int porcentaje, float temperatura, int distancia, float lit
     lcd.print("      Vacio");
   } else {
     lcd.print("Dist: ");
-    lcd.print(distancia);
+    lcd.print(distancia, 1); // Muestra la distancia con un decimal
     lcd.print(usarMetros ? " m" : " cm");
   }
 
@@ -353,9 +353,9 @@ void mostrarDatosLCD(int porcentaje, float temperatura, int distancia, float lit
   }
 }
 
-int medirDistanciaFiltrada() {
-  static int ultimaDistancia = 100;
-  int nuevaDistancia = medirDistancia();
+float medirDistanciaFiltrada() {
+  static float ultimaDistancia = 100; // Cambiado a float
+  float nuevaDistancia = medirDistancia(); // Cambiado a float
   if (nuevaDistancia == -1) return ultimaDistancia;
 
   if (bloquearMedicion && nuevaDistancia > distanciaMinima + 2) bloquearMedicion = false;
@@ -369,7 +369,7 @@ int medirDistanciaFiltrada() {
   return ultimaDistancia;
 }
 
-int medirDistancia() {
+float medirDistancia() {
   long suma = 0;
   int muestras = 5, validas = 0;
 
@@ -383,9 +383,13 @@ int medirDistancia() {
     long duracion = pulseIn(echoPin, HIGH, 30000);
     if (duracion > 0) {
       float distancia = duracion * 0.0343 / 2; // Calcula la distancia en cm
+
+      // Convertir la distancia a metros si es necesario
       if (usarMetros) {
-        distancia = cmAMetros(distancia); // Convierte a metros si es necesario
+        distancia = cmAMetros(distancia); // Convierte a metros
       }
+
+      // Validar la distancia
       if (distancia > 0 && distancia <= 200) {
         suma += distancia;
         validas++;
@@ -394,8 +398,8 @@ int medirDistancia() {
     delay(5);
   }
 
-  if (validas == 0) return -1;
-  return suma / validas;
+  if (validas == 0) return -1; // Si no hay mediciones válidas
+  return suma / validas; // Devuelve la distancia promedio
 }
 
 float leerTemperatura() {
@@ -404,11 +408,11 @@ float leerTemperatura() {
   return (tempC == DEVICE_DISCONNECTED_C) ? -127.0 : tempC;
 }
 
-int calcularLlenado(int distancia) {
+int calcularLlenado(float distancia) { // Cambiado a float
   if (distancia <= distanciaMinima) return 100;
   if (distancia >= distanciaMaxima) return 0;
 
-  float porcentaje = 100.0 * (1 - (float)(distancia - distanciaMinima) / (distanciaMaxima - distanciaMinima));
+  float porcentaje = 100.0 * (1 - (distancia - distanciaMinima) / (distanciaMaxima - distanciaMinima));
   return (porcentaje < 5) ? 5 : (int)porcentaje;
 }
 
